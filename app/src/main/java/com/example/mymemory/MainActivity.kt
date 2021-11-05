@@ -51,7 +51,7 @@ class MainActivity : AppCompatActivity() {
 
         //test purpose
         val intent = Intent(this, CreateActivity::class.java)
-        intent.putExtra(EXTRA_BOARD_SIZE, BoardSize.MEDIUM)//把這頁的資料傳過去
+        intent.putExtra(EXTRA_BOARD_SIZE, BoardSize.EASY)//把這頁的資料傳過去
         startActivityForResult(intent, CREATE_REQUEST_CODE)
         //test purpose
 

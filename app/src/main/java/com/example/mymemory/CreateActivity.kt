@@ -1,9 +1,18 @@
 package com.example.mymemory
 
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
+import android.text.Editable
+import android.text.InputFilter
+import android.text.TextWatcher
+import android.util.Log
 import android.view.MenuItem
 import android.widget.Button
 import android.widget.EditText
@@ -15,23 +24,32 @@ import com.example.mymemory.models.BoardSize
 import com.example.mymemory.utils.EXTRA_BOARD_SIZE
 import com.example.mymemory.utils.isPermissionGranted
 import com.example.mymemory.utils.requestPermission
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
+import com.google.firebase.storage.ktx.storage
+import java.io.ByteArrayOutputStream
 
 class CreateActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "CreateActivity"
         private const val PICK_PHOTO_CODE = 655
         private const val READ_EXTERNAL_PHOTOS_CODE = 248
         private const val READ_PHOTOS_PERMISSION = android.Manifest.permission.READ_EXTERNAL_STORAGE
+        private const val MIN_GAME_NAME_LENGTH = 3
+        private const val MAX_GAME_NAME_LENGTH = 14
     }
 
     private lateinit var rvImagePicker: RecyclerView
     private lateinit var etGameName: EditText
     private lateinit var btnSave: Button
 
-
+    private lateinit var adapter: ImagePickerAdapter
     private lateinit var boardSize: BoardSize
     private var numImageRequired = -1
     private val chosenImageUris = mutableListOf<Uri>()
+    private val storage = Firebase.storage
+    private val db = Firebase.firestore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,8 +68,25 @@ class CreateActivity : AppCompatActivity() {
         //顯示數量在title
         supportActionBar?.title = "Choose pic (0 / $numImageRequired)"
 
+        btnSave.setOnClickListener{
+            saveDataToFirebase()
+        }
 
-        rvImagePicker.adapter = ImagePickerAdapter(this, chosenImageUris, boardSize, object: ImagePickerAdapter.ImageClickListener {
+        etGameName.filters = arrayOf(InputFilter.LengthFilter(MAX_GAME_NAME_LENGTH))//一般最多14個字元
+        //遊戲名稱輸入加入監聽
+        etGameName.addTextChangedListener(object: TextWatcher {
+            override fun afterTextChanged(p0: Editable?) {
+              btnSave.isEnabled = shouldEnableSaveButton()
+            }
+
+            override fun beforeTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+
+            override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
+
+        })
+
+
+        adapter = ImagePickerAdapter(this, chosenImageUris, boardSize, object: ImagePickerAdapter.ImageClickListener {
             override fun onPlaceholderClicked() {//使用者按下空白卡片時
                 if (isPermissionGranted(this@CreateActivity, READ_PHOTOS_PERMISSION)) { //如果已經同意
                     launchIntentForPhotos()//跳到選擇照片頁面 這叫implicit intents 因為給了數個選項讓使用者挑選 還不知道要跳到哪裡
@@ -62,11 +97,14 @@ class CreateActivity : AppCompatActivity() {
             }
 
         } )
+        rvImagePicker.adapter = adapter
         rvImagePicker.setHasFixedSize(true)
         rvImagePicker.layoutManager = GridLayoutManager(this, boardSize.getWidth())
 
 
     }
+
+
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -93,12 +131,108 @@ class CreateActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
 
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PICK_PHOTO_CODE || resultCode != Activity.RESULT_OK || data == null) {
+            Log.w(TAG, "Did not get data back from the launched activity, user likely canceled flow")
+            return
+        }
+        val selectedUri = data.data
+        val clipData = data.clipData//多張照片時
+        if (clipData != null) {
+            Log.i(TAG, "clipData numImages ${clipData.itemCount}: $clipData")
+            for (i in 0 until clipData.itemCount) {
+                val clipItem = clipData.getItemAt(i)
+                if (chosenImageUris.size < numImageRequired) {
+                    chosenImageUris.add(clipItem.uri)
+                }
+            }
+        } else if (selectedUri != null) {
+            Log.i(TAG, "data: $selectedUri")
+            chosenImageUris.add(selectedUri)
+        }
+        adapter.notifyDataSetChanged()
+        supportActionBar?.title = "Choose pics (${chosenImageUris.size} / $numImageRequired)"
+        //打開按鈕
+        btnSave.isEnabled = shouldEnableSaveButton()
+    }
+
+
+    private fun saveDataToFirebase() {
+        val customGameName = etGameName.text.toString()
+        //壓縮照片大小
+        Log.i(TAG, "saveDataToFirebase")
+        var didEncounterError = false
+        val uploadedImageUrls = mutableListOf<String>()
+        for ((index, photoUri) in chosenImageUris.withIndex()) {
+            val imageByteArray = getImageByteArray(photoUri)
+            val filePath = "images/$customGameName/${System.currentTimeMillis()}-${index}.jpg"//遊戲名稱、順序取名 方便辨識
+            val photoReference = storage.reference.child(filePath)
+            photoReference.putBytes(imageByteArray)
+                .continueWithTask {//如果成功
+                    photoUploadTask ->
+                     Log.i(TAG, "Uploaded bytes: ${photoUploadTask.result?.bytesTransferred}")
+                     photoReference.downloadUrl
+                }.addOnCompleteListener { downloadUrlTask ->
+                    if (!downloadUrlTask.isSuccessful) { //上傳失敗
+                        Log.e(TAG, "Exception with Firebase storage", downloadUrlTask.exception)
+                        Toast.makeText(this, "Faild to upload image", Toast.LENGTH_SHORT).show()
+                        didEncounterError = true
+                        return@addOnCompleteListener //任務結束
+                    }
+                    if (didEncounterError) {
+                        return@addOnCompleteListener //任務結束
+                    }
+                    val downloadUrl = downloadUrlTask.result.toString()
+                    uploadedImageUrls.add(downloadUrl)
+                    Log.i(TAG, "Finished uploading $photoUri, num uploaded ${uploadedImageUrls.size}")
+                    if (uploadedImageUrls.size == chosenImageUris.size) {//上傳數量與選擇數量相等 表示上傳成功
+                            handleAllImagesUploaded(customGameName, uploadedImageUrls)
+                    }
+                }
+        }
+    }
+
+    private fun handleAllImagesUploaded(gameName: String, imageUrls: MutableList<String>) {
+        //
+    }
+
+    private fun getImageByteArray(photoUri: Uri): ByteArray {
+        val originalBitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {//檢查sdk版本 舊版用這個
+            val source = ImageDecoder.createSource(contentResolver, photoUri)
+            ImageDecoder.decodeBitmap(source)
+        } else { //新版用這個
+            MediaStore.Images.Media.getBitmap(contentResolver, photoUri)
+        }
+        Log.i(TAG, "Original width ${originalBitmap.width} and height ${originalBitmap.height}")
+        val scaledBitmap = BitmapScaler.scaleToFitHeight(originalBitmap, 250)
+        Log.i(TAG, "Scaled width ${scaledBitmap.width} and height ${scaledBitmap.height}")
+        val byteOutputStream = ByteArrayOutputStream()
+        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 60, byteOutputStream)
+        return byteOutputStream.toByteArray()
+
+    }
+
+    private fun shouldEnableSaveButton(): Boolean {
+        //檢查是否滿足儲存條件
+        if (chosenImageUris.size != numImageRequired) {//照片不夠
+            return false
+        }
+        if(etGameName.text.isBlank() || etGameName.text.length < MIN_GAME_NAME_LENGTH) { //遊戲名稱空白或少於3個字
+            return false
+        }
+        return true
+    }
+
     private fun launchIntentForPhotos() {
       val intent = Intent(Intent.ACTION_PICK)
       intent.type = "image/*"
       intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
        startActivityForResult(Intent.createChooser(intent, "Choose pics"), PICK_PHOTO_CODE)
     }
+
+
 }
 
 
