@@ -3,17 +3,19 @@ package com.example.mymemory
 import android.animation.ArgbEvaluator
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.widget.EditText
 import android.widget.RadioGroup
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.constraintlayout.widget.ConstraintLayout
+import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -22,9 +24,13 @@ import com.example.mymemory.models.MemoryGame
 import com.example.mymemory.models.UserImageList
 import com.example.mymemory.utils.EXTRA_BOARD_SIZE
 import com.example.mymemory.utils.EXTRA_GAME_NAME
+import com.github.jinatonic.confetti.CommonConfetti
 import com.google.android.material.snackbar.Snackbar
 import com.google.firebase.firestore.ktx.firestore
 import com.google.firebase.ktx.Firebase
+import com.squareup.picasso.Picasso
+
+
 
 class MainActivity : AppCompatActivity() {
 
@@ -32,7 +38,7 @@ class MainActivity : AppCompatActivity() {
         private val TAG = "MainActivity"
         private val CREATE_REQUEST_CODE = 248
     }
-    private lateinit var clRoot: ConstraintLayout
+    private lateinit var clRoot: CoordinatorLayout//ConstraintLayout
 
     private lateinit var rvBoard: RecyclerView
     private lateinit var tvNumMoves: TextView
@@ -122,6 +128,9 @@ class MainActivity : AppCompatActivity() {
         val boardDownloadView = LayoutInflater.from(this).inflate(R.layout.dialog_download_board, null)
         showAlertDialog("Fetch memory game", boardDownloadView, View.OnClickListener {
             //抓取已經建立的遊戲名稱 讓使用者選擇
+            val etDownloadGame = boardDownloadView.findViewById<EditText>(R.id.etDownloadGame)
+            val gameToDownload = etDownloadGame.text.toString().trim()
+            downloadGame(gameToDownload)
         })
     }
 
@@ -137,8 +146,12 @@ class MainActivity : AppCompatActivity() {
             val numCards = userImageList.images.size * 2
             boardSize = BoardSize.getByValue(numCards)
             customImages = userImageList.images
-            setupBoard()
+            for (imageUrl in userImageList.images) {
+                Picasso.get().load(imageUrl).fetch()
+            }
+            Snackbar.make(clRoot, "You're now playing '$customGameName'!", Snackbar.LENGTH_LONG).show()
             gameName = customGameName
+            setupBoard()
         }.addOnFailureListener { exception ->//失敗的話
             Log.e(TAG, "Exception when retrieving game", exception)
         }
@@ -257,6 +270,7 @@ class MainActivity : AppCompatActivity() {
                 tvNumPairs.text = "Pairs: ${memoryGame.numPairsFound} / ${boardSize.getNumPairs()}"
                 if (memoryGame.haveWonGame()) {
                     Snackbar.make(clRoot, "You won! Congratulations.", Snackbar.LENGTH_LONG).show()
+                    CommonConfetti.rainingConfetti(clRoot, intArrayOf(Color.YELLOW, Color.GREEN, Color.MAGENTA)).oneShot()
                 }
             }
         tvNumMoves.text = "Moves: ${memoryGame.getNumMoves()}"

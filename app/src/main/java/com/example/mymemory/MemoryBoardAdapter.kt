@@ -62,12 +62,12 @@ class MemoryBoardAdapter(
             val memoryCard  = cards[position]
             if (memoryCard.isFaceUp) {
                 if  (memoryCard.imageUrl != null) {
-                    Picasso.get().load(memoryCard.imageUrl).into(imageButton)//placeholder(R.drawable.ic_image)
+                    Picasso.get().load(memoryCard.imageUrl).placeholder(R.drawable.ic_image).into(imageButton)
                 } else {
                     imageButton.setImageResource(memoryCard.identifier)
                 }
             } else {
-                imageButton.setImageResource(R.drawable.ic_launcher_background)
+                imageButton.setImageResource(R.drawable.banboo)
             }
                 //如果是faceUp就根據id顯示 不然就背景
                 //imageButton.setImageResource(if (memoryCard.isFaceUp) memoryCard.identifier else R.drawable.ic_launcher_background)
