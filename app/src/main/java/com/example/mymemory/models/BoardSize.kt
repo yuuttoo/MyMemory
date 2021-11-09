@@ -5,6 +5,10 @@ enum class BoardSize(val numCards: Int) {//根據困難程度增加卡片張數
     MEDIUM(18),
     HARD(24);
 
+    companion object {
+        fun getByValue(value: Int) = values().first { it.numCards == value }
+    }
+
     fun getWidth(): Int {//根據困難程度增加寬度（卡片較多）
         return when (this) {
             EASY -> 2

@@ -1,6 +1,7 @@
 package com.example.mymemory
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -14,14 +15,17 @@ import android.text.InputFilter
 import android.text.TextWatcher
 import android.util.Log
 import android.view.MenuItem
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.mymemory.models.BoardSize
 import com.example.mymemory.utils.EXTRA_BOARD_SIZE
+import com.example.mymemory.utils.EXTRA_GAME_NAME
 import com.example.mymemory.utils.isPermissionGranted
 import com.example.mymemory.utils.requestPermission
 import com.google.firebase.firestore.ktx.firestore
@@ -43,6 +47,7 @@ class CreateActivity : AppCompatActivity() {
     private lateinit var rvImagePicker: RecyclerView
     private lateinit var etGameName: EditText
     private lateinit var btnSave: Button
+    private lateinit var pbUploading: ProgressBar
 
     private lateinit var adapter: ImagePickerAdapter
     private lateinit var boardSize: BoardSize
@@ -58,6 +63,7 @@ class CreateActivity : AppCompatActivity() {
         rvImagePicker = findViewById(R.id.rvImagePicker)
         etGameName = findViewById(R.id.etGameName)
         btnSave = findViewById(R.id.btnSave)
+        pbUploading = findViewById(R.id.pbUploading)
 
 
         //顯示回上一頁的箭頭
@@ -160,42 +166,91 @@ class CreateActivity : AppCompatActivity() {
 
 
     private fun saveDataToFirebase() {
-        val customGameName = etGameName.text.toString()
         //壓縮照片大小
         Log.i(TAG, "saveDataToFirebase")
+        //儲存按鈕預設關閉 避免使用者一直按 失敗之後才打開 讓使用者重試
+        btnSave.isEnabled = false
+        val customGameName = etGameName.text.toString()
+        //檢查名稱是否重複 避免覆蓋
+        db.collection("games").document(customGameName).get().addOnSuccessListener { document ->
+            if (document != null && document.data != null) {//已經有相同名稱存在db
+                AlertDialog.Builder(this)
+                    .setTitle("Name taken")
+                    .setMessage("A game already exitst with the name $customGameName. please choose another")
+                    .setPositiveButton("OK", null)
+                    .show()
+                    btnSave.isEnabled = true //打開按鈕 失敗之後可以重試
+            } else {
+                handleAllImagesUploading(customGameName)
+            }
+        }.addOnFailureListener { exception ->
+            Log.e(TAG, "Encountered error while saving memory game", exception)
+            Toast.makeText(this, "Encounter error while saving memory game", Toast.LENGTH_SHORT).show()
+            btnSave.isEnabled = true //打開按鈕 失敗之後可以重試
+        }
+
+
+
+    }
+
+    private fun handleAllImagesUploading(gameName: String) {
+        pbUploading.visibility = View.VISIBLE //開始上傳 打開進度條
         var didEncounterError = false
         val uploadedImageUrls = mutableListOf<String>()
         for ((index, photoUri) in chosenImageUris.withIndex()) {
             val imageByteArray = getImageByteArray(photoUri)
-            val filePath = "images/$customGameName/${System.currentTimeMillis()}-${index}.jpg"//遊戲名稱、順序取名 方便辨識
+            val filePath = "images/$gameName/${System.currentTimeMillis()}-${index}.jpg"//遊戲名稱、順序取名 方便辨識
             val photoReference = storage.reference.child(filePath)
             photoReference.putBytes(imageByteArray)
                 .continueWithTask {//如果成功
-                    photoUploadTask ->
-                     Log.i(TAG, "Uploaded bytes: ${photoUploadTask.result?.bytesTransferred}")
-                     photoReference.downloadUrl
+                        photoUploadTask ->
+                    Log.i(TAG, "Uploaded bytes: ${photoUploadTask.result?.bytesTransferred}")
+                    photoReference.downloadUrl
                 }.addOnCompleteListener { downloadUrlTask ->
                     if (!downloadUrlTask.isSuccessful) { //上傳失敗
                         Log.e(TAG, "Exception with Firebase storage", downloadUrlTask.exception)
-                        Toast.makeText(this, "Faild to upload image", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Failed to upload image", Toast.LENGTH_SHORT).show()
                         didEncounterError = true
                         return@addOnCompleteListener //任務結束
                     }
-                    if (didEncounterError) {
+                    if (didEncounterError) {//上傳失敗 進度條關閉
+                        pbUploading.visibility = View.GONE
                         return@addOnCompleteListener //任務結束
                     }
                     val downloadUrl = downloadUrlTask.result.toString()
                     uploadedImageUrls.add(downloadUrl)
+                    //計算上傳進度比例
+                    pbUploading.progress = uploadedImageUrls.size * 100 / chosenImageUris.size
                     Log.i(TAG, "Finished uploading $photoUri, num uploaded ${uploadedImageUrls.size}")
                     if (uploadedImageUrls.size == chosenImageUris.size) {//上傳數量與選擇數量相等 表示上傳成功
-                            handleAllImagesUploaded(customGameName, uploadedImageUrls)
+                        handleAllImagesUploaded(gameName, uploadedImageUrls)
                     }
                 }
         }
     }
 
     private fun handleAllImagesUploaded(gameName: String, imageUrls: MutableList<String>) {
-        //
+        //上傳資訊到Firestore
+        db.collection("games").document(gameName)
+            .set(mapOf("images" to imageUrls))
+            .addOnCompleteListener { gameCreationTask ->
+                pbUploading.visibility = View.GONE //關閉進度條
+                if(!gameCreationTask.isSuccessful) {//上傳不成功 給exception視窗
+                    Log.e(TAG, "Exception with game creation", gameCreationTask.exception)
+                    Toast.makeText(this, "Failed game creation", Toast.LENGTH_SHORT).show()
+                    return@addOnCompleteListener
+                }
+                //上傳成功
+                Log.i(TAG, "Successfully created game $gameName")
+                AlertDialog.Builder(this)
+                    .setTitle("Upload completed! Let's play $gameName !")
+                    .setPositiveButton("OK") {_, _ ->//只有ok選項
+                        val resultData = Intent()
+                        resultData.putExtra(EXTRA_GAME_NAME, gameName)
+                        setResult(Activity.RESULT_OK, resultData)
+                        finish()
+                    }.show()
+            }
     }
 
     private fun getImageByteArray(photoUri: Uri): ByteArray {

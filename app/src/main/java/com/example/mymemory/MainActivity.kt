@@ -1,6 +1,7 @@
 package com.example.mymemory
 
 import android.animation.ArgbEvaluator
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -18,8 +19,12 @@ import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.mymemory.models.BoardSize
 import com.example.mymemory.models.MemoryGame
+import com.example.mymemory.models.UserImageList
 import com.example.mymemory.utils.EXTRA_BOARD_SIZE
+import com.example.mymemory.utils.EXTRA_GAME_NAME
 import com.google.android.material.snackbar.Snackbar
+import com.google.firebase.firestore.ktx.firestore
+import com.google.firebase.ktx.Firebase
 
 class MainActivity : AppCompatActivity() {
 
@@ -32,6 +37,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rvBoard: RecyclerView
     private lateinit var tvNumMoves: TextView
     private lateinit var tvNumPairs: TextView
+
+    private val db = Firebase.firestore
+    private var gameName: String? = null
+    private var customImages: List<String>? = null
 
     private lateinit var memoryGame: MemoryGame
     private lateinit var adapter: MemoryBoardAdapter
@@ -49,12 +58,11 @@ class MainActivity : AppCompatActivity() {
         tvNumPairs = findViewById(R.id.tvNumPairs)
         tvNumPairs.setTextColor(ContextCompat.getColor(this, R.color.color_progress_none))
 
+//        //test purpose
+//        val intent = Intent(this, CreateActivity::class.java)
+//        intent.putExtra(EXTRA_BOARD_SIZE, BoardSize.EASY)//把這頁的資料傳過去
+//        startActivityForResult(intent, CREATE_REQUEST_CODE)
         //test purpose
-        val intent = Intent(this, CreateActivity::class.java)
-        intent.putExtra(EXTRA_BOARD_SIZE, BoardSize.EASY)//把這頁的資料傳過去
-        startActivityForResult(intent, CREATE_REQUEST_CODE)
-        //test purpose
-
 
         setupBoard()
     }
@@ -87,10 +95,56 @@ class MainActivity : AppCompatActivity() {
                 showCreationDialog()
                 return true
             }
+            R.id.mi_download -> {
+                showDownloadDialog()
+                return true
+            }
 
         }
         return super.onOptionsItemSelected(item)
     }
+
+
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == CREATE_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
+            val customGameName = data?.getStringExtra(EXTRA_GAME_NAME)
+            if (customGameName == null) {
+                Log.e(TAG, "Got null custom game from CreatActivity")
+                return
+            }
+            downloadGame(customGameName)
+        }
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    private fun showDownloadDialog() {
+        val boardDownloadView = LayoutInflater.from(this).inflate(R.layout.dialog_download_board, null)
+        showAlertDialog("Fetch memory game", boardDownloadView, View.OnClickListener {
+            //抓取已經建立的遊戲名稱 讓使用者選擇
+        })
+    }
+
+    private fun downloadGame(customGameName: String) {
+        //從firebase抓資料回來 成功的話
+        db.collection("games").document(customGameName).get().addOnSuccessListener { document ->
+            val userImageList = document.toObject(UserImageList::class.java)
+            if (userImageList?.images == null) {
+                Log.e(TAG, "Invalid custom game data from Firestore")
+                Snackbar.make(clRoot, "Sorry, we couldn't find any such game, '$customGameName'", Snackbar.LENGTH_LONG).show()
+                return@addOnSuccessListener
+            }
+            val numCards = userImageList.images.size * 2
+            boardSize = BoardSize.getByValue(numCards)
+            customImages = userImageList.images
+            setupBoard()
+            gameName = customGameName
+        }.addOnFailureListener { exception ->//失敗的話
+            Log.e(TAG, "Exception when retrieving game", exception)
+        }
+
+    }
+
 
     private fun showCreationDialog() {//跟選擇難度的對話視窗類似
         val boardSizeView = LayoutInflater.from(this).inflate(R.layout.dialog_board_size, null)
@@ -126,6 +180,8 @@ class MainActivity : AppCompatActivity() {
             R.id.rbMedium -> BoardSize.MEDIUM
             else -> BoardSize.HARD
            }
+            gameName = null
+            customImages = null
             setupBoard()
        })
     }
@@ -142,6 +198,8 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun setupBoard() {
+        //顯示名稱改為使用者自訂名稱
+        supportActionBar?.title = gameName ?: getString(R.string.app_name)
         when (boardSize) {
             BoardSize.EASY -> {
                 tvNumMoves.text = "Easy: 4 X 2"
@@ -157,7 +215,8 @@ class MainActivity : AppCompatActivity() {
 
             }
         }
-        memoryGame = MemoryGame(boardSize)
+        tvNumPairs.setTextColor(ContextCompat.getColor(this, R.color.color_progress_none))
+        memoryGame = MemoryGame(boardSize, customImages)
 
         //adapter管理資料傳遞
         adapter = MemoryBoardAdapter(this, boardSize, memoryGame.cards, object: MemoryBoardAdapter.CardClickListener {
